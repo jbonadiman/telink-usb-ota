@@ -1,0 +1,116 @@
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.vars.outputs.version }}
+      tag_name: ${{ steps.vars.outputs.tag_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute version, previous tag, and tag name
+        id: vars
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | sed -E 's/version *= *"(.*)"/\1/')
+          tag_name="v${version}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag_name=${tag_name}" >> "$GITHUB_OUTPUT"
+
+          if git rev-parse "${tag_name}" >/dev/null 2>&1; then
+            echo "::error::Tag ${tag_name} already exists -- bump the version in Cargo.toml first."
+            exit 1
+          fi
+
+          prev_tag=$(git tag --sort=-v:refname | head -n1 || true)
+          echo "prev_tag=${prev_tag}" >> "$GITHUB_ENV"
+
+      - name: Build changelog since the previous tag
+        run: |
+          if [ -z "${prev_tag}" ]; then
+            echo "## Changes" > changelog.md
+            git log --pretty=format:"- %s (%h)" >> changelog.md
+          else
+            echo "## Changes since ${prev_tag}" > changelog.md
+            git log "${prev_tag}"..HEAD --pretty=format:"- %s (%h)" >> changelog.md
+          fi
+          echo >> changelog.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: changelog
+          path: changelog.md
+
+      - name: Create and push the release tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.vars.outputs.tag_name }}" -m "Release ${{ steps.vars.outputs.tag_name }}"
+          git push origin "${{ steps.vars.outputs.tag_name }}"
+
+  build:
+    runs-on: ubuntu-latest
+    needs: tag
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.tag.outputs.tag_name }}
+
+      - name: Install Rust cross-compilation targets
+        run: |
+          rustup target add x86_64-unknown-linux-gnu
+          rustup target add x86_64-pc-windows-gnu
+
+      - name: Install mingw-w64 (Windows cross-compilation toolchain)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-mingw-w64-x86-64
+
+      - name: Build Linux binary
+        run: cargo build --release --target x86_64-unknown-linux-gnu
+
+      - name: Build Windows binary
+        run: cargo build --release --target x86_64-pc-windows-gnu
+
+      - name: Package binaries
+        run: |
+          mkdir -p dist
+          version="${{ needs.tag.outputs.version }}"
+          tar -czf "dist/telink-ota-v${version}-linux-x86_64.tar.gz" \
+            -C target/x86_64-unknown-linux-gnu/release telink-ota
+          (cd target/x86_64-pc-windows-gnu/release && \
+            zip "$OLDPWD/dist/telink-ota-v${version}-windows-x86_64.zip" telink-ota.exe)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-binaries
+          path: dist/*
+
+  release:
+    runs-on: ubuntu-latest
+    needs: [tag, build]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-binaries
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: changelog
+          path: .
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.tag.outputs.tag_name }}
+          name: ${{ needs.tag.outputs.tag_name }}
+          body_path: changelog.md
+          files: dist/*
