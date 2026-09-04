@@ -1,0 +1,10 @@
+[package]
+name = "telink-usb-ota"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+description = "Linux host-side writer for Telink's USB-HID OTA protocol (TC32-based keyboards, mice, etc.)"
+
+[[bin]]
+name = "telink-ota"
+path = "src/main.rs"
