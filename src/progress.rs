@@ -60,6 +60,20 @@ fn format_duration(total_secs: u64) -> String {
     }
 }
 
+// One line of live transfer progress: bar, percent, bytes, rate, ETA.
+pub fn render_progress(done: u64, total: u64, elapsed_secs: f64, width: usize) -> String {
+    let rate = if elapsed_secs > 0.0 { done as f64 / elapsed_secs } else { 0.0 };
+    let eta = eta_secs(done, total, elapsed_secs)
+        .map(format_duration)
+        .unwrap_or_else(|| "--:--".to_string());
+    let pct = (done * 100).checked_div(total).unwrap_or(100);
+    format!(
+        "{} {pct:>3}% {done:>7}/{total} bytes  {}  ETA {eta}",
+        render_bar(done, total, width),
+        format_rate(rate),
+    )
+}
+
 // Linear estimate from the average rate so far. `None` when there isn't
 // enough data yet for a rate to mean anything (no progress, or no time
 // elapsed to measure it over) -- callers show a placeholder instead of a
@@ -105,6 +119,41 @@ pub fn red(s: &str, enabled: bool) -> String {
 
 pub fn bold(s: &str, enabled: bool) -> String {
     colorize(s, "1", enabled)
+}
+
+// The tool's terminal settings, decided once and threaded as one value
+// instead of a `color` flag on every function. All fatal errors exit through
+// `fail`, so there is a single exit path and a single color decision.
+pub struct Console {
+    color: bool,
+    pub verbose: bool,
+}
+
+impl Console {
+    pub fn new(verbose: bool) -> Self {
+        Self { color: colors_enabled(), verbose }
+    }
+
+    pub fn green(&self, s: &str) -> String {
+        green(s, self.color)
+    }
+
+    pub fn yellow(&self, s: &str) -> String {
+        yellow(s, self.color)
+    }
+
+    fn red(&self, s: &str) -> String {
+        red(s, self.color)
+    }
+
+    pub fn bold(&self, s: &str) -> String {
+        bold(s, self.color)
+    }
+
+    pub fn fail(&self, msg: &str) -> ! {
+        eprintln!("{}", self.red(msg));
+        std::process::exit(1);
+    }
 }
 
 // NO_COLOR (any value, per no-color.org) always wins over TTY detection.
@@ -175,6 +224,23 @@ mod tests {
     fn eta_secs_is_none_without_enough_data_for_a_rate() {
         assert_eq!(eta_secs(0, 100, 5.0), None, "no progress yet, no rate to estimate from");
         assert_eq!(eta_secs(50, 100, 0.0), None, "zero elapsed time, rate is undefined");
+    }
+
+    #[test]
+    fn render_progress_shows_bar_percent_bytes_rate_and_eta() {
+        let line = render_progress(50, 100, 10.0, 10);
+        assert!(line.starts_with("[#####-----]"), "{line}");
+        assert!(line.contains(" 50%"), "{line}");
+        assert!(line.contains("50/100 bytes"), "{line}");
+        assert!(line.contains("5 B/s"), "{line}");
+        assert!(line.ends_with("ETA 00:10"), "{line}");
+    }
+
+    #[test]
+    fn render_progress_handles_an_empty_transfer() {
+        let line = render_progress(0, 0, 1.0, 10);
+        assert!(line.contains("100%"), "{line}");
+        assert!(line.ends_with("ETA --:--"), "{line}");
     }
 
     #[test]
