@@ -4,13 +4,12 @@ mod packet;
 mod progress;
 
 use hid::{HidChannel, REPORT_SIZE};
-use progress::{bold, format_duration, format_rate, green, red, render_bar, yellow};
+use progress::{bold, green, red, yellow, Progress};
 use std::io::Write as _;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const ACK_TIMEOUT: Duration = Duration::from_millis(500);
 const MAX_RETRIES: u32 = 20;
-const BAR_WIDTH: usize = 30;
 
 fn usage() -> ! {
     eprintln!("usage:");
@@ -87,7 +86,7 @@ fn flash(chan: &mut HidChannel, path: &str, verbose: bool, color: bool) {
 
     send_and_report(chan, &packet::start_packet(), "start", verbose, color);
 
-    let started = Instant::now();
+    let progress = Progress::new(total as u64);
     let mut offset: u32 = 0;
     while (offset as usize) < total {
         let mut data = [0xFFu8; packet::CHUNK_LEN];
@@ -99,17 +98,7 @@ fn flash(chan: &mut HidChannel, path: &str, verbose: bool, color: bool) {
 
         offset += packet::CHUNK_LEN as u32;
         let done = (offset as usize).min(total) as u64;
-        let elapsed = started.elapsed().as_secs_f64();
-        let rate = if elapsed > 0.0 { done as f64 / elapsed } else { 0.0 };
-        let eta = progress::eta_secs(done, total as u64, elapsed)
-            .map(format_duration)
-            .unwrap_or_else(|| "--:--".to_string());
-        let pct = if total == 0 { 100 } else { done * 100 / total as u64 };
-        print!(
-            "\r{} {pct:>3}% {done:>7}/{total} bytes  {}  ETA {eta}",
-            render_bar(done, total as u64, BAR_WIDTH),
-            format_rate(rate),
-        );
+        print!("\r{}", progress.line(done));
         std::io::stdout().flush().ok();
     }
     println!();
