@@ -10,6 +10,24 @@ const MAGIC: [u8; 4] = [0x04, 0x52, 0x28, 0x00];
 
 pub const CHUNK_LEN: usize = 16;
 
+// The address field is 16 bits holding `offset >> 4`, so it can only reach the
+// first 0xFF00 chunk addresses -- and that same field carries the control
+// opcodes (0xFF00/0xFF01/0xFF02), so a real chunk address must stay below
+// 0xFF00. An image past this limit either wraps back to address 0 or has its
+// last chunks read by the device as a control command.
+pub const MAX_IMAGE_LEN: usize = 0xFF00 * CHUNK_LEN;
+
+// An empty image has no last chunk, so the FINISH address would underflow.
+pub fn image_len_error(len: usize) -> Result<(), String> {
+    if len == 0 {
+        Err("image is empty".to_string())
+    } else if len > MAX_IMAGE_LEN {
+        Err(format!("image is larger than the {MAX_IMAGE_LEN}-byte protocol maximum"))
+    } else {
+        Ok(())
+    }
+}
+
 fn build_report(payload: &[u8]) -> [u8; REPORT_SIZE] {
     assert!(payload.len() + 9 <= REPORT_SIZE, "payload too long for a single report");
     let len = payload.len();
@@ -39,11 +57,11 @@ pub fn chunk_packet(offset: u32, data: &[u8; CHUNK_LEN]) -> [u8; REPORT_SIZE] {
 }
 
 // Control packets reuse the address field as a 16-bit little-endian opcode
-// (0xFF00/0xFF01/0xFF02 all have a 0xFF high byte, so they can never collide
-// with a real chunk address on a 128 KB image). Byte order confirmed against
-// the device's own dispatch code: it reads the low byte first, then the high
-// byte, i.e. little-endian -- matching the same field's encoding for ordinary
-// chunk addresses.
+// (0xFF00/0xFF01/0xFF02 all have a 0xFF high byte, so they cannot collide with
+// a real chunk address while MAX_IMAGE_LEN keeps every address below 0xFF00).
+// Byte order confirmed against the device's own dispatch code: it reads the
+// low byte first, then the high byte, i.e. little-endian -- matching the same
+// field's encoding for ordinary chunk addresses.
 fn control_packet(opcode: u16, extra: &[u8]) -> [u8; REPORT_SIZE] {
     let mut payload = Vec::with_capacity(2 + extra.len());
     payload.extend_from_slice(&opcode.to_le_bytes());
@@ -130,6 +148,23 @@ mod tests {
             0xf3, 0x00, 0x00, 0x00, 0x00,
         ];
         assert!(chunk_ack_ok(&resp, 0));
+    }
+
+    #[test]
+    fn max_image_len_stays_below_the_reserved_control_opcodes() {
+        // The last byte of a maximum-size image must still map to a plain
+        // chunk address; one byte further would be read as an opcode.
+        assert_eq!((MAX_IMAGE_LEN - 1) >> 4, 0xFEFF);
+        assert_eq!(MAX_IMAGE_LEN >> 4, 0xFF00);
+        assert!(MAX_IMAGE_LEN >> 4 <= u16::MAX as usize);
+    }
+
+    #[test]
+    fn image_len_error_rejects_empty_and_oversized_images() {
+        assert!(image_len_error(0).is_err());
+        assert!(image_len_error(1).is_ok());
+        assert!(image_len_error(MAX_IMAGE_LEN).is_ok());
+        assert!(image_len_error(MAX_IMAGE_LEN + 1).is_err());
     }
 
     #[test]

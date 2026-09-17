@@ -77,6 +77,10 @@ fn flash(chan: &mut HidChannel, path: &str, verbose: bool, color: bool) {
         std::process::exit(1);
     });
     let total = image.len();
+    if let Err(why) = packet::image_len_error(total) {
+        eprintln!("{}", red(&format!("{path}: {why}"), color));
+        std::process::exit(1);
+    }
     println!(
         "{} {total} bytes ({} chunks)",
         bold("image:", color),
