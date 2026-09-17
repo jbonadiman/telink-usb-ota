@@ -54,20 +54,18 @@ fn main() {
         std::process::exit(1);
     });
 
-    match cmd {
-        "version" => {
-            let pkt = packet::version_packet();
-            chan.write_report(&pkt).unwrap_or_else(|e| {
-                eprintln!("{}", red(&format!("write failed: {e}"), color));
-                std::process::exit(1);
-            });
-            match chan.read_report(ACK_TIMEOUT) {
-                Some(resp) => println!("response {resp:02x?}"),
-                None => eprintln!("{}", yellow(&format!("no response within {ACK_TIMEOUT:?}"), color)),
-            }
+    if cmd == "version" {
+        let pkt = packet::version_packet();
+        chan.write_report(&pkt).unwrap_or_else(|e| {
+            eprintln!("{}", red(&format!("write failed: {e}"), color));
+            std::process::exit(1);
+        });
+        match chan.read_report(ACK_TIMEOUT) {
+            Some(resp) => println!("response {resp:02x?}"),
+            None => eprintln!("{}", yellow(&format!("no response within {ACK_TIMEOUT:?}"), color)),
         }
-        "flash" => flash(&mut chan, &args[3], verbose, color),
-        _ => unreachable!(),
+    } else {
+        flash(&mut chan, &args[3], verbose, color);
     }
 }
 
@@ -149,17 +147,15 @@ fn send_chunk_with_retry(chan: &mut HidChannel, offset: u32, data: &[u8; packet:
             eprintln!("\n{}", red(&format!("write failed at offset {offset:#x}: {e}"), color));
             std::process::exit(1);
         }
-        if let Some(resp) = chan.read_report(ACK_TIMEOUT) {
-            if packet::chunk_ack_ok(&resp, offset) {
-                return;
-            }
-        }
-        if verbose && attempt < MAX_RETRIES {
-            eprintln!("\n{}", yellow(&format!("retrying offset {offset:#x} (attempt {attempt})"), color));
+        if chan.read_report(ACK_TIMEOUT).is_some_and(|resp| packet::chunk_ack_ok(&resp, offset)) {
+            return;
         }
         if attempt == MAX_RETRIES {
             eprintln!("\n{}", red(&format!("no ack for offset {offset:#x} after {MAX_RETRIES} attempts"), color));
             std::process::exit(1);
+        }
+        if verbose {
+            eprintln!("\n{}", yellow(&format!("retrying offset {offset:#x} (attempt {attempt})"), color));
         }
     }
 }
