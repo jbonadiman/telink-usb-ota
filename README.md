@@ -60,8 +60,10 @@ bytes 9+    payload
 Payload for a data chunk (20 bytes): 2-byte little-endian address
 (`byte_offset >> 4`), 16 payload bytes, then a CRC-16/MODBUS over those 18
 bytes. Control packets (`version`/`start`/`finish`) reuse the address field
-as a 16-bit little-endian opcode — `0xFF00`/`0xFF01`/`0xFF02` — which can
-never collide with a real chunk address on any image under 2 MB.
+as a 16-bit little-endian opcode — `0xFF00`/`0xFF01`/`0xFF02` — so a real
+chunk address must stay below `0xFF00`. The largest safe image is therefore
+`0xFF00 * 16` = 1,044,480 bytes, just under 1 MiB; past that the address wraps
+into opcode space and the trailing chunks land at the wrong flash offset.
 
 A chunk-write ack's success is **not** an echo of the address you sent — it's
 the *next expected* chunk index, little-endian, at response bytes `[9, 10]`.
