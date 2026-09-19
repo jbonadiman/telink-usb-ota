@@ -1,37 +1,3 @@
-use std::time::Instant;
-
-const BAR_WIDTH: usize = 30;
-
-// One progress line for a `flash` run: bar, percent, bytes done, rate, ETA.
-// Owns the clock and the bar width so callers only report how far they have got.
-pub struct Progress {
-    total: u64,
-    started: Instant,
-}
-
-impl Progress {
-    pub fn new(total: u64) -> Self {
-        Self { total, started: Instant::now() }
-    }
-
-    pub fn line(&self, done: u64) -> String {
-        Self::render(done, self.total, self.started.elapsed().as_secs_f64())
-    }
-
-    fn render(done: u64, total: u64, elapsed_secs: f64) -> String {
-        let rate = if elapsed_secs > 0.0 { done as f64 / elapsed_secs } else { 0.0 };
-        let eta = eta_secs(done, total, elapsed_secs)
-            .map(format_duration)
-            .unwrap_or_else(|| "--:--".to_string());
-        let pct = (done * 100).checked_div(total).unwrap_or(100);
-        format!(
-            "{} {pct:>3}% {done:>7}/{total} bytes  {}  ETA {eta}",
-            render_bar(done, total, BAR_WIDTH),
-            format_rate(rate),
-        )
-    }
-}
-
 // A fixed-width `[####------]` bar. `total == 0` is treated as fully done
 // (nothing to do, no division by zero) rather than as a special case callers
 // need to handle themselves.
@@ -171,22 +137,6 @@ pub fn colors_enabled() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn progress_line_packs_bar_percent_rate_and_eta() {
-        assert_eq!(
-            Progress::render(50, 100, 10.0),
-            "[###############---------------]  50%      50/100 bytes  5 B/s  ETA 00:10"
-        );
-        assert_eq!(
-            Progress::render(0, 100, 0.0),
-            "[------------------------------]   0%       0/100 bytes  0 B/s  ETA --:--"
-        );
-        assert_eq!(
-            Progress::render(0, 0, 1.0),
-            "[##############################] 100%       0/0 bytes  0 B/s  ETA --:--"
-        );
-    }
 
     #[test]
     fn render_bar_shows_partial_fill() {
