@@ -52,3 +52,15 @@ fn flash_with_confirm_on_a_missing_device_fails_to_open() {
     assert_eq!(out.status.code(), Some(1));
     assert!(stderr(&out).contains(MISSING_DEVICE));
 }
+
+#[test]
+fn version_refuses_a_regular_file_without_writing_to_it() {
+    let path = std::env::temp_dir().join(format!("telink-ota-not-a-device-{}", std::process::id()));
+    std::fs::write(&path, b"untouched").unwrap();
+
+    let out = run(&[path.to_str().unwrap(), "version"]);
+
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(std::fs::read(&path).unwrap(), b"untouched", "the file must not be written to");
+    std::fs::remove_file(&path).ok();
+}
