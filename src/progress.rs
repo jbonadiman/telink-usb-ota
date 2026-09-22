@@ -29,7 +29,7 @@ fn format_duration(total_secs: u64) -> String {
 // One line of live transfer progress: bar, percent, bytes, rate, ETA.
 pub fn render_progress(done: u64, total: u64, elapsed_secs: f64, width: usize) -> String {
     let rate = if elapsed_secs > 0.0 { done as f64 / elapsed_secs } else { 0.0 };
-    let eta = eta_secs(done, total, elapsed_secs)
+    let eta = eta_secs(rate, total.saturating_sub(done))
         .map(format_duration)
         .unwrap_or_else(|| "--:--".to_string());
     let pct = (done * 100).checked_div(total).unwrap_or(100);
@@ -44,13 +44,11 @@ pub fn render_progress(done: u64, total: u64, elapsed_secs: f64, width: usize) -
 // enough data yet for a rate to mean anything (no progress, or no time
 // elapsed to measure it over) -- callers show a placeholder instead of a
 // misleading "0s" or a divide-by-zero.
-fn eta_secs(done: u64, total: u64, elapsed_secs: f64) -> Option<u64> {
-    if done == 0 || elapsed_secs <= 0.0 {
+fn eta_secs(rate: f64, remaining: u64) -> Option<u64> {
+    if rate <= 0.0 {
         return None;
     }
-    let rate = done as f64 / elapsed_secs;
-    let remaining = total.saturating_sub(done) as f64;
-    Some((remaining / rate).round() as u64)
+    Some((remaining as f64 / rate).round() as u64)
 }
 
 fn format_rate(bytes_per_sec: f64) -> String {
@@ -71,25 +69,10 @@ fn colorize(text: &str, code: &str, enabled: bool) -> String {
     }
 }
 
-pub fn green(s: &str, enabled: bool) -> String {
-    colorize(s, "32", enabled)
-}
-
-pub fn yellow(s: &str, enabled: bool) -> String {
-    colorize(s, "33", enabled)
-}
-
-pub fn red(s: &str, enabled: bool) -> String {
-    colorize(s, "31", enabled)
-}
-
-pub fn bold(s: &str, enabled: bool) -> String {
-    colorize(s, "1", enabled)
-}
-
 // The tool's terminal settings, decided once and threaded as one value
 // instead of a `color` flag on every function. All fatal errors exit through
-// `fail`, so there is a single exit path and a single color decision.
+// `fail`, so there is a single exit path and a single color decision, and
+// every colored string comes from one of these methods.
 pub struct Console {
     color: bool,
     pub verbose: bool,
@@ -101,23 +84,19 @@ impl Console {
     }
 
     pub fn green(&self, s: &str) -> String {
-        green(s, self.color)
+        colorize(s, "32", self.color)
     }
 
     pub fn yellow(&self, s: &str) -> String {
-        yellow(s, self.color)
-    }
-
-    fn red(&self, s: &str) -> String {
-        red(s, self.color)
+        colorize(s, "33", self.color)
     }
 
     pub fn bold(&self, s: &str) -> String {
-        bold(s, self.color)
+        colorize(s, "1", self.color)
     }
 
     pub fn fail(&self, msg: &str) -> ! {
-        eprintln!("{}", self.red(msg));
+        eprintln!("{}", colorize(msg, "31", self.color));
         std::process::exit(1);
     }
 }
@@ -129,7 +108,7 @@ fn should_color(no_color_env: Option<&str>, is_tty: bool) -> bool {
     no_color_env.is_none() && is_tty
 }
 
-pub fn colors_enabled() -> bool {
+fn colors_enabled() -> bool {
     use std::io::IsTerminal;
     should_color(std::env::var("NO_COLOR").ok().as_deref(), std::io::stdout().is_terminal())
 }
@@ -165,15 +144,14 @@ mod tests {
 
     #[test]
     fn eta_secs_estimates_from_current_rate() {
-        // 50/100 done in 10s -> 5 units/s -> 50 remaining -> 10s left
-        assert_eq!(eta_secs(50, 100, 10.0), Some(10));
-        assert_eq!(eta_secs(100, 100, 10.0), Some(0));
+        // 5 units/s with 50 remaining -> 10s left
+        assert_eq!(eta_secs(5.0, 50), Some(10));
+        assert_eq!(eta_secs(10.0, 0), Some(0));
     }
 
     #[test]
-    fn eta_secs_is_none_without_enough_data_for_a_rate() {
-        assert_eq!(eta_secs(0, 100, 5.0), None, "no progress yet, no rate to estimate from");
-        assert_eq!(eta_secs(50, 100, 0.0), None, "zero elapsed time, rate is undefined");
+    fn eta_secs_is_none_without_a_rate() {
+        assert_eq!(eta_secs(0.0, 100), None, "no progress yet, no rate to estimate from");
     }
 
     #[test]
@@ -194,6 +172,11 @@ mod tests {
     }
 
     #[test]
+    fn render_progress_shows_no_eta_without_elapsed_time() {
+        assert!(render_progress(50, 100, 0.0, 10).ends_with("ETA --:--"));
+    }
+
+    #[test]
     fn format_rate_scales_the_unit() {
         assert_eq!(format_rate(500.0), "500 B/s");
         assert_eq!(format_rate(2048.0), "2.0 KB/s");
@@ -202,11 +185,18 @@ mod tests {
 
     #[test]
     fn colorize_wraps_in_ansi_codes_only_when_enabled() {
-        assert_eq!(green("ok", true), "\x1b[32mok\x1b[0m");
-        assert_eq!(green("ok", false), "ok");
-        assert_eq!(yellow("warn", true), "\x1b[33mwarn\x1b[0m");
-        assert_eq!(red("err", true), "\x1b[31merr\x1b[0m");
-        assert_eq!(bold("hi", true), "\x1b[1mhi\x1b[0m");
+        assert_eq!(colorize("ok", "32", true), "\x1b[32mok\x1b[0m");
+        assert_eq!(colorize("ok", "32", false), "ok");
+        assert_eq!(colorize("err", "31", true), "\x1b[31merr\x1b[0m");
+    }
+
+    #[test]
+    fn console_wraps_each_method_in_its_own_code() {
+        let color = Console { color: true, verbose: false };
+        assert_eq!(color.green("ok"), "\x1b[32mok\x1b[0m");
+        assert_eq!(color.yellow("warn"), "\x1b[33mwarn\x1b[0m");
+        assert_eq!(color.bold("hi"), "\x1b[1mhi\x1b[0m");
+        assert_eq!(Console { color: false, verbose: false }.green("ok"), "ok");
     }
 
     #[test]
