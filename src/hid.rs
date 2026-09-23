@@ -13,29 +13,45 @@ pub struct HidChannel {
 }
 
 // The path is opened read-write and every command writes a report to it, so a
-// path that is not a character device is refused before anything is written.
-// A regular file would lose its first report to the version query, and a block
-// device would lose the start of the disk.
-#[cfg(unix)]
-fn is_character_device(file: &File) -> std::io::Result<bool> {
-    use std::os::unix::fs::FileTypeExt;
-    Ok(file.metadata()?.file_type().is_char_device())
+// path that is not a hidraw node is refused before anything is written. A
+// regular file would lose its first report to the version query, a block device
+// would lose the start of the disk, and another character device (e.g. /dev/mem
+// or /dev/port, both root-only) would take a 33-byte write to an interface this
+// tool has no business touching. The check is on the opened handle, so a
+// symlink swapped in between a separate check and the open cannot get past it.
+#[cfg(target_os = "linux")]
+fn is_hidraw_device(file: &File) -> std::io::Result<bool> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    let md = file.metadata()?;
+    if !md.file_type().is_char_device() {
+        return Ok(false);
+    }
+    // hidraw has no fixed major -- it is allocated at boot, and on a current
+    // kernel 241 is cec while hidraw gets its own -- so read the owning class
+    // from sysfs instead of hardcoding a number. The rdev comes from the opened
+    // fd, so a symlink cannot point the check at a different node than the
+    // write.
+    let rdev = md.rdev();
+    let major = (rdev >> 8) & 0xfff;
+    let minor = (rdev & 0xff) | ((rdev >> 12) & 0xfff00);
+    let link = format!("/sys/dev/char/{major}:{minor}/subsystem");
+    Ok(std::fs::read_link(link).map(|p| p.ends_with("hidraw")).unwrap_or(false))
 }
 
-// Windows has no character/block distinction, and this tool's hidraw path is
-// Linux-only, so the check stays Unix-only to keep the cross-build compiling.
-#[cfg(not(unix))]
-fn is_character_device(_file: &File) -> std::io::Result<bool> {
+// hidraw is Linux-only and the Windows cross-build has no character/block
+// distinction, so the check is a no-op on every other target.
+#[cfg(not(target_os = "linux"))]
+fn is_hidraw_device(_file: &File) -> std::io::Result<bool> {
     Ok(true)
 }
 
 impl HidChannel {
     pub fn open(path: &str) -> std::io::Result<Self> {
         let writer = OpenOptions::new().read(true).write(true).open(path)?;
-        if !is_character_device(&writer)? {
+        if !is_hidraw_device(&writer)? {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "not a character device (expected a /dev/hidraw* node)",
+                "not a hidraw device (expected a /dev/hidraw* node)",
             ));
         }
         let mut reader = writer.try_clone()?;

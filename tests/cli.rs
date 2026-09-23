@@ -64,3 +64,14 @@ fn version_refuses_a_regular_file_without_writing_to_it() {
     assert_eq!(std::fs::read(&path).unwrap(), b"untouched", "the file must not be written to");
     std::fs::remove_file(&path).ok();
 }
+
+// /dev/null is a character device but not a hidraw node, so it must be refused
+// before the version report is written to it.
+#[cfg(target_os = "linux")]
+#[test]
+fn version_refuses_a_character_device_that_is_not_hidraw() {
+    let out = run(&["/dev/null", "version"]);
+
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("hidraw"));
+}
